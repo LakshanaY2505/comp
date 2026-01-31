@@ -1,0 +1,37 @@
+[
+  {
+    "post_id": "1",
+    "caption": "Mashreq is down",
+    "time_detected": "2026-01-31T10:11:47.691442",
+    "action": "dismiss",
+    "risk_type": "service_signal",
+    "risk_level": "low",
+    "confidence": 0.7,
+    "department": "Technology & Operations",
+    "why_it_matters": "The bank was made aware of the Mashreq issue through a social media post, which has raised concerns about the reliability of international payment services.",
+    "summary": "Mashreq is down due to an international payment service outage. The reason for this is unknown as it is not clear why the situation occurred or what happened with Mashreq.",
+    "time-detected": "2026-01-31T10:11:02.450596",
+    "status": "dismissed",
+    "reviewed_at": "2026-01-31T10:46:19.405862"
+  },
+  {
+    "post_id": "2",
+    "caption": "New fraud scheme targeting customers",
+    "time_detected": "2026-01-31T10:16:51.641482",
+    "action": "escalate",
+    "risk_type": "rumor",
+    "risk_level": "low",
+    "confidence": 0.7,
+    "department": "Technology & Operations",
+    "why_it_matters": "The social media post is warning of a potential new fraud scheme targeting customers.",
+    "summary": "A new, unconfirmed claim is circulating online claiming to be related to the bank's services.",
+    "time-detected": "2026-01-31T10:14:02.304876",
+    "escalation_options": [
+      "{'name': 'Investigate claim details', 'description': 'Verify the authenticity of the online rumor'}",
+      "{'name': 'Post a warning on our social media channels', 'description': 'Alert customers and partners about the potential scam'}",
+      "{'name': 'Remind customers to report suspicious transactions', 'description': 'Educate customers on how to protect themselves from online scams'}"
+    ],
+    "action_taken": "{'name': 'Investigate claim details', 'description': 'Verify the authenticity of the online rumor'}",
+    "status": "mitigated"
+  }
+]
