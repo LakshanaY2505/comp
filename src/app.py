@@ -3,7 +3,10 @@ import json
 import pandas as pd
 from datetime import datetime, timedelta
 import requests
-from agent import OLLAMA_URL, MODEL
+
+# Hardcoded to avoid import warnings
+OLLAMA_URL = "http://localhost:11434/api/generate"
+MODEL = "llama3.2:1b"
 
 st.set_page_config(page_title="Mashreq Social Signal Dashboard", layout="wide")
 
@@ -11,153 +14,299 @@ st.set_page_config(page_title="Mashreq Social Signal Dashboard", layout="wide")
 @st.cache_data
 def load_risks():
     try:
-        with open("../output/risks.json", "r") as f:
-            return json.load(f)
-    except:
+        with open("../output/risks.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+            # Ensure confidence is a float
+            for risk in data:
+                if isinstance(risk.get('confidence'), str):
+                    risk['confidence'] = float(risk['confidence'])
+            return data
+    except FileNotFoundError:
+        st.error("❌ risks.json not found. Run agent.py first.")
+        return []
+    except Exception as e:
+        st.error(f"❌ Error loading risks: {e}")
         return []
 
-# Load synthetic data for context
-@st.cache_data
-def load_synthetic_data():
+def generate_escalation_options(summary: str, risk_type: str, risk_level: str):
+    """Generate AI-powered escalation options."""
+    prompt = f"""
+You are a bank risk response assistant.
+Given the risk summary, generate EXACTLY 3 concise action options to address it.
+Return ONLY valid JSON in this format:
+{{
+  "options": ["option 1", "option 2", "option 3"]
+}}
+
+Risk Type: {risk_type}
+Risk Level: {risk_level}
+Summary: {summary}
+"""
+    payload = {"model": MODEL, "prompt": prompt, "stream": False}
     try:
-        with open("../data/synthetic_data.json", "r") as f:
-            return json.load(f)
+        response = requests.post(OLLAMA_URL, json=payload)
+        response.raise_for_status()
+        raw_text = response.json()["response"].strip()
+        # Simple JSON extraction
+        start = raw_text.find("{")
+        end = raw_text.rfind("}") + 1
+        if start != -1 and end != 0:
+            data = json.loads(raw_text[start:end])
+            options = data.get("options", [])
+            return [str(o).strip() for o in options][:3]
     except:
-        return []
+        pass
+    return ["Monitor virality", "Prepare statement", "Contact affected parties"]
 
-def decision_support_chat(risk):
-    """AI-powered decision support assistant."""
-    st.subheader("Decision Support Assistant")
-    st.info("This assistant helps you think through uncertainty. It does not initiate actions.")
+def show_confidence_meter(confidence):
+    """Display a visual confidence meter."""
+    st.write("**Confidence Level**")
     
-    user_question = st.text_area("What would you like to explore?", key=f"chat_{risk['post_id']}")
+    # Color coding
+    if confidence >= 0.7:
+        color = "🟢"
+        label = "High Confidence"
+        bar_color = "#28a745"
+    elif confidence >= 0.4:
+        color = "🟡"
+        label = "Medium Confidence"
+        bar_color = "#ffc107"
+    else:
+        color = "🔴"
+        label = "Low Confidence"
+        bar_color = "#dc3545"
     
-    if st.button("Ask Assistant", key=f"btn_{risk['post_id']}"):
-        if user_question.strip():
-            prompt = f"""
-You are a bank risk decision-support assistant. Help the human think through this risk.
-Ask clarifying questions and suggest review angles. Do NOT initiate any actions.
+    st.markdown(f"### {color} {confidence:.0%} - {label}")
+    st.progress(confidence)
 
+def chat_sidebar(risk):
+    """Sidebar chatbot for risk Q&A."""
+    st.sidebar.header("💬 Risk Assistant")
+    st.sidebar.write("Ask questions about this risk")
+    
+    # Initialize chat history in session state
+    if 'chat_history' not in st.session_state:
+        st.session_state.chat_history = []
+    
+    # Display chat history
+    chat_container = st.sidebar.container()
+    with chat_container:
+        for msg in st.session_state.chat_history:
+            if msg['role'] == 'user':
+                st.write(f"**You:** {msg['content']}")
+            else:
+                st.write(f"**Assistant:** {msg['content']}")
+    
+    # Chat input and button in sidebar
+    col1, col2 = st.sidebar.columns([4, 1])
+    with col1:
+        user_input = st.text_input("Your question:", key=f"chat_input_{risk['post_id']}")
+    with col2:
+        send = st.button("Send", key=f"send_btn_{risk['post_id']}")
+    
+    if send and user_input.strip():
+        st.session_state.chat_history.append({'role': 'user', 'content': user_input})
+        
+        prompt = f"""
+You are a bank risk analyst assistant. Answer user questions about the risk.
+Keep answers concise and grounded in the provided context.
+
+Caption: {risk['caption']}
 Risk Type: {risk['risk_type']}
 Risk Level: {risk['risk_level']}
 Confidence: {risk['confidence']}
-Summary: {risk['summary']}
+Department: {risk['department']}
 Why It Matters: {risk['why_it_matters']}
+Summary: {risk['summary']}
 
-Human Question: {user_question}
-
-Respond with:
-1. A clarifying question or two
-2. Suggested validation angles
-3. Key uncertainties to resolve
+User Question: {user_input}
 """
-            payload = {"model": MODEL, "prompt": prompt, "stream": False}
-            try:
-                response = requests.post(OLLAMA_URL, json=payload)
+        payload = {"model": MODEL, "prompt": prompt, "stream": False}
+        try:
+            with st.spinner("Assistant is thinking..."):
+                response = requests.post(OLLAMA_URL, json=payload, timeout=30)
                 response.raise_for_status()
-                assistant_response = response.json()["response"].strip()
-                st.write(assistant_response)
-            except Exception as e:
-                st.error(f"Error: {e}")
+                answer = response.json()["response"].strip()
+                st.session_state.chat_history.append({'role': 'assistant', 'content': answer})
+        except requests.exceptions.Timeout:
+            st.session_state.chat_history.append({'role': 'assistant', 'content': "⏱️ Request timeout. Please try again."})
+        except Exception as e:
+            st.session_state.chat_history.append({'role': 'assistant', 'content': f"❌ Error: {str(e)}"})
+        
+        st.rerun()
+    
+    if st.sidebar.button("Clear Chat", key=f"clear_chat_{risk['post_id']}"):
+        st.session_state.chat_history = []
+        st.rerun()
 
 def show_risk_detail(risk, risks_list):
-    """Detailed risk view with human-in-the-loop workflow."""
-    st.header(f"Risk: {risk['risk_type'].upper()}")
+    """Detailed risk view with enhanced UI."""
     
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Risk Level", risk['risk_level'].capitalize())
-    with col2:
-        st.metric("Confidence", f"{risk['confidence']:.0%}")
-    with col3:
-        st.metric("Department", risk['department'])
-    with col4:
-        st.metric("Status", risk.get('status', 'pending').capitalize())
+    # Always show chat sidebar if "Other" was clicked
+    if st.session_state.get('show_chat', False):
+        chat_sidebar(risk)
     
-    # Explainability Panel
-    st.subheader("Explainability Panel")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("**Why It Matters**")
-        st.write(risk['why_it_matters'])
-    with col2:
-        st.write("**Detection Patterns**")
-        st.write(f"- Risk Type: {risk['risk_type']}")
-        st.write(f"- Detected: {risk['time-detected']}")
+    # Risk Title
+    st.title(f"🚨 {risk['risk_type'].replace('_', ' ').title()}")
     
-    st.write("**What AI is Uncertain About**")
-    st.write(f"- Confidence Score: {risk['confidence']} (0.7+ = strong signal)")
-    st.write("- No assumption of factual correctness")
-    st.write("- Requires human validation")
-    
-    # Credibility & Scenario Comparison
-    st.subheader("Credibility & Context")
-    st.write(f"**Risk Summary:** {risk['summary']}")
-    st.write(f"**Original Caption:** _{risk['caption']}_")
-    
-    # Find similar historical signals (mock)
-    similar_count = sum(1 for r in risks_list if r.get('risk_type') == risk['risk_type'])
-    st.write(f"**Similar Signals:** {similar_count} other {risk['risk_type']} signals in history")
-    
-    # Human Review Workflow
-    st.subheader("Human Review Workflow")
-    st.write("**Non-Action Boundaries:**")
-    st.write("- ❌ No public response will be generated")
-    st.write("- ❌ No assumption of factual correctness")
-    st.write("- ❌ No automated escalation")
-    st.write("- ✅ All decisions logged for auditability")
-    
-    st.write("**Suggested Review Paths:**")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        if st.button("📊 Monitor for Escalation", key=f"monitor_{risk['post_id']}"):
-            risk['action'] = 'monitor'
-            risk['status'] = 'monitoring'
-            risk['reviewed_at'] = datetime.utcnow().isoformat()
-            st.success("✅ Risk marked for monitoring")
-            save_risk_action(risk)
-    
-    with col2:
-        if st.button("🔍 Request Internal Validation", key=f"validate_{risk['post_id']}"):
-            risk['action'] = 'validate'
-            risk['status'] = 'validation_requested'
-            risk['reviewed_at'] = datetime.utcnow().isoformat()
-            st.success("✅ Validation requested")
-            save_risk_action(risk)
-    
-    with col3:
-        if st.button("🤝 Flag for Cross-Team Awareness", key=f"flag_{risk['post_id']}"):
-            risk['action'] = 'flag'
-            risk['status'] = 'flagged'
-            risk['reviewed_at'] = datetime.utcnow().isoformat()
-            st.success("✅ Risk flagged for awareness")
-            save_risk_action(risk)
-    
-    with col4:
-        if st.button("🗑️ Dismiss as Noise", key=f"dismiss_{risk['post_id']}"):
-            risk['action'] = 'dismiss'
-            risk['status'] = 'dismissed'
-            risk['reviewed_at'] = datetime.utcnow().isoformat()
-            st.success("✅ Risk dismissed")
-            save_risk_action(risk)
+    # Status badge
+    status = risk.get('status', 'pending')
+    status_colors = {
+        'pending': '🟠',
+        'monitoring': '🔵',
+        'validation_requested': '🟣',
+        'flagged': '🟡',
+        'dismissed': '⚫',
+        'actioned': '🟢'
+    }
+    st.markdown(f"### Status: {status_colors.get(status, '⚪')} {status.replace('_', ' ').title()}")
     
     st.divider()
     
-    # Decision Support Assistant (Other)
-    if st.checkbox("Need more support? Open Decision Assistant", key=f"chat_check_{risk['post_id']}"):
-        decision_support_chat(risk)
+    # Main info in columns
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.subheader("📋 Risk Description")
+        st.write(risk['summary'])
+        
+        st.subheader("💡 Why It Matters")
+        st.write(risk['why_it_matters'])
+        
+        st.subheader("📝 Original Caption")
+        st.info(risk['caption'])
+        
+        st.write(f"**Department:** {risk['department']}")
+        st.write(f"**Detected:** {risk['time-detected']}")
+    
+    with col2:
+        show_confidence_meter(risk['confidence'])
+        
+        st.metric("Risk Level", risk['risk_level'].upper())
+    
+    st.divider()
+    
+    # Action Buttons
+    st.subheader("⚡ Actions")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("🚀 Escalate", use_container_width=True, type="primary"):
+            st.session_state.show_escalation = True
+            st.session_state.escalation_risk = risk
+            st.rerun()
+    
+    with col2:
+        if st.button("🗑️ Dismiss", use_container_width=True):
+            risk['action'] = 'dismiss'
+            risk['status'] = 'dismissed'
+            risk['reviewed_at'] = datetime.utcnow().isoformat()
+            save_risk_action(risk)
+            st.success("✅ Risk dismissed")
+            st.session_state.selected_risk = None
+            st.rerun()
+    
+    with col3:
+        if st.button("💬 Other (Chat)", use_container_width=True):
+            st.session_state.show_chat = True
+            st.rerun()
+    
+    # Escalation Modal
+    if st.session_state.get('show_escalation', False):
+        show_escalation_modal(risk)
+    
+    # Back button
+    if st.button("← Back to Dashboard"):
+        st.session_state.selected_risk = None
+        st.session_state.show_escalation = False
+        st.session_state.show_chat = False
+        st.session_state.chat_history = []
+        st.rerun()
+
+def show_escalation_modal(risk):
+    """Show escalation options in a modal-style container."""
+    st.markdown("---")
+    st.subheader("🚀 Escalation Options")
+    
+    # Generate options
+    if 'escalation_options' not in st.session_state:
+        with st.spinner("Generating mitigation options..."):
+            options = generate_escalation_options(
+                risk['summary'],
+                risk['risk_type'],
+                risk['risk_level']
+            )
+            st.session_state.escalation_options = options
+    else:
+        options = st.session_state.escalation_options
+    
+    st.write("**Select an action to mitigate this risk:**")
+    
+    for i, option in enumerate(options, 1):
+        if st.button(f"Option {i}: {option}", key=f"opt_{i}", use_container_width=True):
+            st.session_state.selected_option = option
+            st.session_state.show_summary = True
+    
+    # Summary Modal
+    if st.session_state.get('show_summary', False):
+        show_action_summary(risk, st.session_state.selected_option)
+    
+    if st.button("Cancel", key="cancel_escalation"):
+        st.session_state.show_escalation = False
+        st.session_state.escalation_options = None
+        st.session_state.show_summary = False
+        st.rerun()
+
+def show_action_summary(risk, chosen_action):
+    """Show summary after action selection."""
+    st.markdown("---")
+    st.success("### ✅ Escalation Summary")
+    
+    st.write(f"**Risk Name:** {risk['risk_type'].replace('_', ' ').title()}")
+    st.write(f"**Action Taken:** {chosen_action}")
+    st.write(f"**Updated Status:** Mitigated")
+    st.write(f"**Timestamp:** {datetime.utcnow().isoformat()}")
+    
+    if st.button("Confirm & Save", type="primary", key="confirm_save"):
+        risk['action'] = 'escalate'
+        risk['status'] = 'mitigated'  # Changed from 'actioned' to 'mitigated'
+        risk['action_taken'] = chosen_action
+        risk['reviewed_at'] = datetime.utcnow().isoformat()
+        save_risk_action(risk)
+        
+        st.balloons()
+        st.success("Risk escalation recorded successfully!")
+        
+        # Reset states and reload
+        st.session_state.show_escalation = False
+        st.session_state.escalation_options = None
+        st.session_state.show_summary = False
+        st.session_state.selected_risk = None
+        st.rerun()
 
 def save_risk_action(risk):
     """Save human decision to risks.json."""
-    risks = load_risks()
-    for i, r in enumerate(risks):
-        if r['post_id'] == risk['post_id']:
-            risks[i] = risk
-            break
-    with open("../output/risks.json", "w") as f:
-        json.dump(risks, f, indent=2)
+    try:
+        # Read fresh data (don't use cache)
+        with open("../output/risks.json", "r", encoding="utf-8") as f:
+            risks = json.load(f)
+        
+        # Update the matching risk
+        for i, r in enumerate(risks):
+            if r['post_id'] == risk['post_id']:
+                risks[i] = risk
+                break
+        
+        # Write back to file
+        with open("../output/risks.json", "w", encoding="utf-8") as f:
+            json.dump(risks, f, indent=2)
+        
+        # Clear cache so next load gets fresh data
+        load_risks.clear()
+        st.success("✅ Risk saved successfully!")
+    except Exception as e:
+        st.error(f"❌ Error saving risk: {e}")
 
 def show_department_view(department, risks_list):
     """Department-level aggregated view."""
@@ -189,8 +338,11 @@ def show_department_view(department, risks_list):
     
     with col1:
         st.write("**Signal Distribution by Type**")
-        type_counts = pd.Series([r['risk_type'] for r in filtered]).value_counts()
-        st.bar_chart(type_counts)
+        if filtered:
+            type_counts = pd.Series([r['risk_type'] for r in filtered]).value_counts()
+            st.bar_chart(type_counts)
+        else:
+            st.info("No data to display")
     
     with col2:
         st.write("**Confidence Score Distribution**")
@@ -214,6 +366,7 @@ def show_department_view(department, risks_list):
             
             if st.button("View Details", key=f"details_{risk['post_id']}"):
                 st.session_state.selected_risk = risk
+                st.rerun()
 
 def main():
     st.title("🏦 Mashreq Social Signal Intelligence Dashboard")
@@ -227,9 +380,6 @@ def main():
     
     # Check for selected risk in session
     if 'selected_risk' in st.session_state and st.session_state.selected_risk:
-        if st.button("← Back to Dashboard"):
-            st.session_state.selected_risk = None
-            st.rerun()
         show_risk_detail(st.session_state.selected_risk, risks)
         return
     
@@ -251,7 +401,7 @@ def main():
         high_risk = len([r for r in risks if r['risk_level'] in ['high', 'critical']])
         st.metric("High/Critical", high_risk)
     with col3:
-        avg_conf = sum(r['confidence'] for r in risks) / len(risks)
+        avg_conf = sum(r['confidence'] for r in risks) / len(risks) if risks else 0
         st.metric("Avg Confidence", f"{avg_conf:.0%}")
     with col4:
         monitored = len([r for r in risks if r.get('status') in ['monitoring', 'validation_requested']])

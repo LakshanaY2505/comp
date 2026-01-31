@@ -20,7 +20,8 @@ def clean_json(raw_text):
     match = re.search(r'\{.*\}', raw_text, re.DOTALL)
     if match:
         return match.group(0)
-    raise ValueError("No valid JSON found") 
+    # If no JSON found, return raw text (let json.loads handle the error)
+    return raw_text 
 
 def analyze_caption(caption: str):
     prompt = f"""
@@ -86,16 +87,25 @@ Summary: {summary}
         "stream": False
     }
 
-    response = requests.post(OLLAMA_URL, json=payload)
-    response.raise_for_status()
-
-    raw_text = clean_json(response.json()["response"].strip())
     try:
-        data = json.loads(raw_text)
-        options = data.get("options", [])
+        response = requests.post(OLLAMA_URL, json=payload)
+        response.raise_for_status()
+        raw_text = response.json()["response"].strip()
+        
+        # Try to extract JSON
+        cleaned = clean_json(raw_text)
+        result = json.loads(cleaned)
+        options = result.get("options", [])
         return [str(o).strip() for o in options][:3]
-    except json.JSONDecodeError:
-        return []
+    except (json.JSONDecodeError, requests.RequestException, KeyError) as e:
+        print(f"⚠️ Error generating options: {e}")
+        print(f"Raw response: {raw_text if 'raw_text' in locals() else 'N/A'}")
+        # Fallback options
+        return [
+            "Monitor virality and track sources",
+            "Prepare a holding statement",
+            "Coordinate with Communications team"
+        ]
 
 def normalize_result(result: dict) -> dict:
     risk_type = str(result.get("risk_type", "other")).strip()
