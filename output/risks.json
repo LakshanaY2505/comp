@@ -2,36 +2,35 @@
   {
     "post_id": "1",
     "caption": "Mashreq is down",
-    "time_detected": "2026-01-31T10:11:47.691442",
+    "time_detected": "2026-01-31T13:13:53.242013",
     "action": "dismiss",
-    "risk_type": "service_signal",
+    "risk_type": "rumor",
     "risk_level": "low",
-    "confidence": 0.7,
+    "confidence": 0.0,
     "department": "Technology & Operations",
-    "why_it_matters": "The bank was made aware of the Mashreq issue through a social media post, which has raised concerns about the reliability of international payment services.",
-    "summary": "Mashreq is down due to an international payment service outage. The reason for this is unknown as it is not clear why the situation occurred or what happened with Mashreq.",
-    "time-detected": "2026-01-31T10:11:02.450596",
-    "status": "dismissed",
-    "reviewed_at": "2026-01-31T10:46:19.405862"
+    "why_it_matters": "",
+    "summary": "",
+    "time-detected": "2026-01-31T13:06:46.678361"
   },
   {
     "post_id": "2",
     "caption": "New fraud scheme targeting customers",
-    "time_detected": "2026-01-31T10:16:51.641482",
+    "time_detected": "2026-01-31T13:19:11.636378",
     "action": "escalate",
     "risk_type": "rumor",
-    "risk_level": "low",
-    "confidence": 0.7,
-    "department": "Technology & Operations",
-    "why_it_matters": "The social media post is warning of a potential new fraud scheme targeting customers.",
-    "summary": "A new, unconfirmed claim is circulating online claiming to be related to the bank's services.",
-    "time-detected": "2026-01-31T10:14:02.304876",
+    "risk_level": "high",
+    "confidence": 0.4,
+    "department": "Risk & Compliance",
+    "why_it_matters": "New fraud scheme targeting customers",
+    "summary": "Potential new fraud scheme with potential for significant financial loss if detected early.",
+    "time-detected": "2026-01-31T13:13:53.242013",
     "escalation_options": [
-      "{'name': 'Investigate claim details', 'description': 'Verify the authenticity of the online rumor'}",
-      "{'name': 'Post a warning on our social media channels', 'description': 'Alert customers and partners about the potential scam'}",
-      "{'name': 'Remind customers to report suspicious transactions', 'description': 'Educate customers on how to protect themselves from online scams'}"
+      "{'id': 1, 'description': 'Conduct a thorough investigation into the source and scope of the rumor', 'probability': 0.8, 'impact': 7}",
+      "{'id': 2, 'description': 'Establish a dedicated task force to monitor and investigate suspicious activity', 'probability': 0.9, 'impact': 8}",
+      "{'id': 3, 'description': 'Implement additional security measures to prevent the dissemination of false information', 'probability': 0.7, 'impact': 6}"
     ],
-    "action_taken": "{'name': 'Investigate claim details', 'description': 'Verify the authenticity of the online rumor'}",
-    "status": "mitigated"
+    "action_taken": "{'description': 'Implement additional security measures to prevent unauthorized access to sensitive information', 'priority': 'Medium-High'}",
+    "status": "mitigated",
+    "reviewed_at": "2026-01-31T13:25:06.202004"
   }
 ]
