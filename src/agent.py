@@ -84,7 +84,7 @@ Return JSON in EXACTLY this format:
         result = json.loads(raw_text)
         return normalize_result(result)
     except json.JSONDecodeError as e:
-        print(f"❌ JSON parse error: {e}")
+        print(f"JSON parse error: {e}")
         print(f"Raw text from LLM:\n{raw_text}\n")
         raise
 
@@ -286,7 +286,7 @@ def main():
     with open("../output/risks.json", "w", encoding="utf-8") as f:
         json.dump(risks, f, indent=2)
 
-    print("\n✅ Done! Saved results to ../output/risks.json")
+    print("\nDone! Saved results to ../output/risks.json")
 
 if __name__ == "__main__":
     main()
