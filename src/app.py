@@ -563,7 +563,7 @@ def show_notification_popup(risk):
     icon = dept_icon.get(risk.get('department'), "🚨")
     
     # Create a visual notification card
-    notification_col = st.columns([1, 4, 1])
+    notification_col = st.columns([1, 4])
     with notification_col[0]:
         st.markdown(f"# {icon}")
     
@@ -585,11 +585,6 @@ def show_notification_popup(risk):
         **Confidence:** {risk.get('confidence', 0):.0%}  
         **Caption:** *{risk.get('caption', '')[:80]}...*
         """)
-    
-    with notification_col[2]:
-        if st.button("View", key=f"notify_{risk['post_id']}"):
-            st.session_state.selected_risk = risk
-            st.rerun()
 
 def check_for_new_risks():
     """Check if new risks have arrived and show notifications."""
