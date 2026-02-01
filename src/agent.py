@@ -1,10 +1,13 @@
 import json
 import re
 import requests
-from datetime import datetime
+import os
+from datetime import datetime, timezone
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL = "llama3.2:1b"
+# OpenAI API Configuration
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+MODEL = "gpt-4o-mini"
 
 ALLOWED_RISK_TYPES = {"rumor", "misinformation", "service_signal", "fraud_signal", "other"}
 ALLOWED_RISK_LEVELS = {"low", "medium", "high", "critical"}
@@ -24,16 +27,26 @@ def clean_json(raw_text):
     return raw_text 
 
 def analyze_caption(caption: str):
-    prompt = f"""
-You are a bank risk signal detection assistant.
+    prompt = f"""You are a bank risk signal detection assistant with expertise in identifying verified information vs. unverified claims.
+
 Analyze this social media caption and output ONLY valid JSON.
 
-Calculate "confidence" as a decimal between 0.0 and 1.0 based on how strongly the caption supports the selected risk_type and risk_level.
-Use this rubric:
-- 0.0–0.3: weak/ambiguous signal
-- 0.4–0.6: moderate signal
-- 0.7–1.0: strong, clear signal
-Return confidence as a numeric value (no text, no percent sign).
+CREDIBILITY ASSESSMENT:
+- Look for specific facts: numbers, dates, names, locations
+- Identify language indicators:
+  * Unverified: "rumor", "allegedly", "heard that", "I heard", "supposedly", "claim", "reportedly", "unconfirmed"
+  * Verified: "confirmed", "official", "announced", "reported by", specific details, first-hand account
+- Check for anecdotal vs. systematic evidence (personal account vs. pattern of incidents)
+
+Calculate "confidence" (0.0-1.0) based on how strongly the caption supports the selected risk_type and risk_level:
+- 0.0–0.3: weak/ambiguous signal or unverified claim
+- 0.4–0.6: moderate signal with some evidence or verified minor issue
+- 0.7–1.0: strong, clear signal with specific details or multiple confirmations
+
+Calculate "credibility_score" (0.0-1.0) based on likelihood that the claim is TRUE:
+- 0.0–0.3: Highly suspect, likely false/malicious misinformation
+- 0.4–0.6: Unverified claim, needs investigation
+- 0.7–1.0: Credible claim with specific details or first-hand account
 
 Caption:
 \"{caption}\"
@@ -43,22 +56,29 @@ Return JSON in EXACTLY this format:
   "risk_type": "rumor|misinformation|service_signal|fraud_signal|other",
   "risk_level": "low|medium|high|critical",
   "confidence": 0.0,
+  "credibility_score": 0.0,
+  "is_verified": true|false,
   "department": "Technology & Operations|Customer Support|Marketing & Communications|Risk & Compliance",
   "why_it_matters": "short explanation",
   "summary": "short summary of the risk",
-  "time-detected": "{datetime.utcnow().isoformat()}"
-}}
-"""
+  "verification_notes": "brief notes on what indicates verification status",
+  "time-detected": "{datetime.now(timezone.utc).isoformat()}"
+}}"""
+    
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
     payload = {
         "model": MODEL,
-        "prompt": prompt,
-        "stream": False
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.7
     }
 
-    response = requests.post(OLLAMA_URL, json=payload)
+    response = requests.post(OPENAI_URL, json=payload, headers=headers)
     response.raise_for_status()
 
-    raw_text = clean_json(response.json()["response"].strip())
+    raw_text = clean_json(response.json()["choices"][0]["message"]["content"].strip())
 
     try:
         result = json.loads(raw_text)
@@ -69,8 +89,7 @@ Return JSON in EXACTLY this format:
         raise
 
 def generate_escalation_options(summary: str, risk_type: str, risk_level: str):
-    prompt = f"""
-You are a bank risk response assistant.
+    prompt = f"""You are a bank risk response assistant.
 Given the risk summary, generate EXACTLY 3 concise action options to address it.
 Return ONLY valid JSON in this format:
 {{
@@ -79,18 +98,22 @@ Return ONLY valid JSON in this format:
 
 Risk Type: {risk_type}
 Risk Level: {risk_level}
-Summary: {summary}
-"""
+Summary: {summary}"""
+    
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
     payload = {
         "model": MODEL,
-        "prompt": prompt,
-        "stream": False
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.7
     }
 
     try:
-        response = requests.post(OLLAMA_URL, json=payload)
+        response = requests.post(OPENAI_URL, json=payload, headers=headers)
         response.raise_for_status()
-        raw_text = response.json()["response"].strip()
+        raw_text = response.json()["choices"][0]["message"]["content"].strip()
         
         # Try to extract JSON
         cleaned = clean_json(raw_text)
@@ -128,6 +151,16 @@ def normalize_result(result: dict) -> dict:
         confidence = 0.0
     confidence = max(0.0, min(1.0, confidence))
 
+    try:
+        credibility_score = float(result.get("credibility_score", 0.5))
+    except (TypeError, ValueError):
+        credibility_score = 0.5
+    credibility_score = max(0.0, min(1.0, credibility_score))
+
+    is_verified = result.get("is_verified", credibility_score >= 0.7)
+    if isinstance(is_verified, str):
+        is_verified = is_verified.lower() in {"true", "yes", "1"}
+
     department = str(result.get("department", "Technology & Operations")).strip()
     if department not in ALLOWED_DEPARTMENTS:
         department = "Technology & Operations"
@@ -136,9 +169,12 @@ def normalize_result(result: dict) -> dict:
         "risk_type": risk_type,
         "risk_level": risk_level,
         "confidence": confidence,
+        "credibility_score": credibility_score,
+        "is_verified": is_verified,
         "department": department,
         "why_it_matters": str(result.get("why_it_matters", "")).strip(),
         "summary": str(result.get("summary", "")).strip(),
+        "verification_notes": str(result.get("verification_notes", "")).strip(),
         "time-detected": str(result.get("time-detected", "")).strip(),
     }
 
@@ -149,8 +185,7 @@ def risk_chat(caption: str, result: dict):
         if user_q.lower() in {"exit", "quit"}:
             break
 
-        prompt = f"""
-You are a bank risk analyst assistant. Answer user questions about the risk.
+        prompt = f"""You are a bank risk analyst assistant. Answer user questions about the risk.
 Keep answers concise and grounded in the provided context.
 
 Caption: {caption}
@@ -161,12 +196,20 @@ Department: {result['department']}
 Why It Matters: {result['why_it_matters']}
 Summary: {result['summary']}
 
-User Question: {user_q}
-"""
-        payload = {"model": MODEL, "prompt": prompt, "stream": False}
-        response = requests.post(OLLAMA_URL, json=payload)
+User Question: {user_q}"""
+        
+        headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.7
+        }
+        response = requests.post(OPENAI_URL, json=payload, headers=headers)
         response.raise_for_status()
-        print("Assistant:", response.json()["response"].strip())
+        print("Assistant:", response.json()["choices"][0]["message"]["content"].strip())
 
 def main():
     # 1) Load posts
@@ -185,6 +228,8 @@ def main():
         print(f"Risk Type: {result['risk_type']}")
         print(f"Risk Level: {result['risk_level']}")
         print(f"Confidence: {result['confidence']}")
+        print(f"Credibility: {result['credibility_score']} {'✓ Verified' if result['is_verified'] else '⚠ Unverified'}")
+        print(f"Verification Notes: {result['verification_notes']}")
         print(f"Description: {result['summary']}")
 
         action = input("Choose action (dismiss/escalate/other): ").strip().lower()
@@ -194,7 +239,7 @@ def main():
         risk_record = {
             "post_id": post["id"],
             "caption": caption,
-            "time_detected": datetime.utcnow().isoformat(),
+            "time_detected": datetime.now(timezone.utc).isoformat(),
             "action": action,
             **result
         }

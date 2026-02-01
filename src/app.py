@@ -1,37 +1,70 @@
 import streamlit as st
 import json
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import requests
+import os
+import time
+import plotly.express as px
 
-# Hardcoded to avoid import warnings
-OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL = "llama3.2:1b"
+# OpenAI API Configuration
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "your-api-key-here").strip()
+OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+MODEL = "gpt-4o-mini"
 
 st.set_page_config(page_title="Mashreq Social Signal Dashboard", layout="wide")
 
-# Load risks data
-@st.cache_data
+# Load risks data WITHOUT caching so it updates in real-time
 def load_risks():
+    """Load risks with NO caching to get real-time updates."""
     try:
         with open("../output/risks.json", "r", encoding="utf-8") as f:
             data = json.load(f)
-            # Ensure confidence is a float
+            # Ensure numeric fields are floats
             for risk in data:
                 if isinstance(risk.get('confidence'), str):
                     risk['confidence'] = float(risk['confidence'])
+                if isinstance(risk.get('credibility_score'), str):
+                    risk['credibility_score'] = float(risk['credibility_score'])
             return data
     except FileNotFoundError:
-        st.error("❌ risks.json not found. Run agent.py first.")
         return []
     except Exception as e:
-        st.error(f"❌ Error loading risks: {e}")
+        st.error(f"Error loading risks: {e}")
         return []
+
+def load_history():
+    """Load risk history from history.json."""
+    try:
+        with open("../output/history.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+            for item in data:
+                if isinstance(item.get('confidence'), str):
+                    item['confidence'] = float(item['confidence'])
+                if isinstance(item.get('credibility_score'), str):
+                    item['credibility_score'] = float(item['credibility_score'])
+            return data
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        st.error(f"Error loading history: {e}")
+        return []
+
+def save_to_history(risk):
+    """Save a risk to the history log."""
+    try:
+        history = load_history()
+        history.append(risk)
+        with open("../output/history.json", "w", encoding="utf-8") as f:
+            json.dump(history, f, indent=2)
+    except Exception as e:
+        st.error(f"Error saving to history: {e}")
 
 def generate_escalation_options(summary: str, risk_type: str, risk_level: str):
     """Generate AI-powered escalation options."""
-    prompt = f"""
-You are a bank risk response assistant.
+    default_options = ["Monitor virality", "Prepare statement", "Contact affected parties"]
+    
+    prompt = f"""You are a bank risk response assistant.
 Given the risk summary, generate EXACTLY 3 concise action options to address it.
 Return ONLY valid JSON in this format:
 {{
@@ -40,48 +73,99 @@ Return ONLY valid JSON in this format:
 
 Risk Type: {risk_type}
 Risk Level: {risk_level}
-Summary: {summary}
-"""
-    payload = {"model": MODEL, "prompt": prompt, "stream": False}
+Summary: {summary}"""
+    
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.7
+    }
     try:
-        response = requests.post(OLLAMA_URL, json=payload)
+        response = requests.post(OPENAI_URL, json=payload, headers=headers)
         response.raise_for_status()
-        raw_text = response.json()["response"].strip()
+        raw_text = response.json()["choices"][0]["message"]["content"].strip()
         # Simple JSON extraction
         start = raw_text.find("{")
         end = raw_text.rfind("}") + 1
         if start != -1 and end != 0:
             data = json.loads(raw_text[start:end])
-            options = data.get("options", [])
-            return [str(o).strip() for o in options][:3]
-    except:
+            options = data.get("options")
+            if options and isinstance(options, list) and len(options) > 0:
+                return [str(o).strip() for o in options][:3]
+    except Exception as e:
         pass
-    return ["Monitor virality", "Prepare statement", "Contact affected parties"]
+    return default_options
 
-def show_confidence_meter(confidence):
-    """Display a visual confidence meter."""
-    st.write("**Confidence Level**")
-    
-    # Color coding
-    if confidence >= 0.7:
-        color = "🟢"
-        label = "High Confidence"
-        bar_color = "#28a745"
-    elif confidence >= 0.4:
-        color = "🟡"
-        label = "Medium Confidence"
-        bar_color = "#ffc107"
+def get_risk_color(risk_level):
+    """Get color code for risk level."""
+    color_map = {
+        'low': '#28a745',      # Green
+        'medium': '#ffc107',   # Yellow
+        'high': '#fd7e14',     # Orange
+        'critical': '#dc3545'  # Red
+    }
+    return color_map.get(risk_level, '#6c757d')
+
+def get_risk_container(risk_level):
+    """Get the appropriate Streamlit container for risk level."""
+    if risk_level in ['high', 'critical']:
+        return 'error'  # Red
+    elif risk_level == 'medium':
+        return 'warning'  # Yellow
     else:
-        color = "🔴"
-        label = "Low Confidence"
-        bar_color = "#dc3545"
+        return 'success'  # Green
+
+def show_confidence_meter(confidence, credibility_score=None, is_verified=None, verification_notes=""):
+    """Display visual confidence and credibility meters."""
+    col1, col2 = st.columns(2)
     
-    st.markdown(f"### {color} {confidence:.0%} - {label}")
-    st.progress(confidence)
+    with col1:
+        st.write("**Confidence Level**")
+        
+        # Confidence color coding
+        if confidence >= 0.7:
+            color = "🟢"
+            label = "High Confidence"
+        elif confidence >= 0.4:
+            color = "🟡"
+            label = "Medium Confidence"
+        else:
+            color = "🔴"
+            label = "Low Confidence"
+        
+        st.markdown(f"### {color} {confidence:.0%} - {label}")
+        st.progress(confidence)
+    
+    with col2:
+        st.write("**Credibility**")
+        
+        if credibility_score is not None:
+            # Credibility color coding
+            if credibility_score >= 0.7:
+                cred_color = "✅"
+                cred_label = "Verified"
+            elif credibility_score >= 0.4:
+                cred_color = "⚠️"
+                cred_label = "Unverified"
+            else:
+                cred_color = "🚫"
+                cred_label = "Likely False"
+            
+            st.markdown(f"### {cred_color} {credibility_score:.0%} - {cred_label}")
+            st.progress(credibility_score)
+        else:
+            st.info("N/A")
+    
+    if verification_notes:
+        st.markdown(f"**Verification Notes:** {verification_notes}")
 
 def chat_sidebar(risk):
     """Sidebar chatbot for risk Q&A."""
-    st.sidebar.header("💬 Risk Assistant")
+    st.sidebar.header("Risk Assistant")
     st.sidebar.write("Ask questions about this risk")
     
     # Initialize chat history in session state
@@ -98,17 +182,13 @@ def chat_sidebar(risk):
                 st.write(f"**Assistant:** {msg['content']}")
     
     # Chat input and button in sidebar
-    col1, col2 = st.sidebar.columns([4, 1])
-    with col1:
-        user_input = st.text_input("Your question:", key=f"chat_input_{risk['post_id']}")
-    with col2:
-        send = st.button("Send", key=f"send_btn_{risk['post_id']}")
+    user_input = st.sidebar.text_input("Your question:", key=f"chat_input_{risk['post_id']}")
+    send = st.sidebar.button("Send", key=f"send_btn_{risk['post_id']}", use_container_width=True)
     
     if send and user_input.strip():
         st.session_state.chat_history.append({'role': 'user', 'content': user_input})
         
-        prompt = f"""
-You are a bank risk analyst assistant. Answer user questions about the risk.
+        prompt = f"""You are a bank risk analyst assistant. Answer user questions about the risk.
 Keep answers concise and grounded in the provided context.
 
 Caption: {risk['caption']}
@@ -119,20 +199,40 @@ Department: {risk['department']}
 Why It Matters: {risk['why_it_matters']}
 Summary: {risk['summary']}
 
-User Question: {user_input}
-"""
-        payload = {"model": MODEL, "prompt": prompt, "stream": False}
+User Question: {user_input}"""
+        
+        headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.7
+        }
         try:
             with st.spinner("Assistant is thinking..."):
-                response = requests.post(OLLAMA_URL, json=payload, timeout=30)
+                response = requests.post(OPENAI_URL, json=payload, headers=headers, timeout=30)
                 response.raise_for_status()
-                answer = response.json()["response"].strip()
+                answer = response.json()["choices"][0]["message"]["content"].strip()
                 st.session_state.chat_history.append({'role': 'assistant', 'content': answer})
         except requests.exceptions.Timeout:
-            st.session_state.chat_history.append({'role': 'assistant', 'content': "⏱️ Request timeout. Please try again."})
+            st.session_state.chat_history.append({'role': 'assistant', 'content': "Request timeout. Please try again."})
         except Exception as e:
-            st.session_state.chat_history.append({'role': 'assistant', 'content': f"❌ Error: {str(e)}"})
+            st.session_state.chat_history.append({'role': 'assistant', 'content': f"Error: {str(e)}"})
         
+        st.rerun()
+    
+    # Mark as Mitigated button
+    st.sidebar.divider()
+    if st.sidebar.button("Mark as Mitigated", key=f"mitigate_btn_{risk['post_id']}", use_container_width=True, type="primary"):
+        risk['action'] = 'mitigated'
+        risk['status'] = 'mitigated'
+        risk['reviewed_at'] = datetime.now(timezone.utc).isoformat()
+        save_risk_action(risk)
+        st.sidebar.success("Risk marked as mitigated!")
+        st.session_state.selected_risk = None
+        time.sleep(1)
         st.rerun()
     
     if st.sidebar.button("Clear Chat", key=f"clear_chat_{risk['post_id']}"):
@@ -147,7 +247,18 @@ def show_risk_detail(risk, risks_list):
         chat_sidebar(risk)
     
     # Risk Title
-    st.title(f"🚨 {risk['risk_type'].replace('_', ' ').title()}")
+    st.title(f"{risk['risk_type'].replace('_', ' ').title()}")
+    
+    # Color-coded risk level banner
+    risk_level = risk['risk_level']
+    container_type = get_risk_container(risk_level)
+    
+    if container_type == 'error':
+        st.error(f"🔴 **CRITICAL/HIGH RISK** - This requires immediate escalation and action")
+    elif container_type == 'warning':
+        st.warning(f"🟡 **MEDIUM RISK** - Monitor and prepare mitigation measures")
+    else:
+        st.success(f"🟢 **LOW RISK** - Routine monitoring recommended")
     
     # Status badge
     status = risk.get('status', 'pending')
@@ -167,20 +278,25 @@ def show_risk_detail(risk, risks_list):
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        st.subheader("📋 Risk Description")
+        st.subheader("Risk Description")
         st.write(risk['summary'])
         
-        st.subheader("💡 Why It Matters")
+        st.subheader("Why It Matters")
         st.write(risk['why_it_matters'])
         
-        st.subheader("📝 Original Caption")
+        st.subheader("Original Caption")
         st.info(risk['caption'])
         
         st.write(f"**Department:** {risk['department']}")
         st.write(f"**Detected:** {risk['time-detected']}")
     
     with col2:
-        show_confidence_meter(risk['confidence'])
+        show_confidence_meter(
+            risk['confidence'],
+            risk.get('credibility_score', 0.5),
+            risk.get('is_verified', False),
+            risk.get('verification_notes', '')
+        )
         
         st.metric("Risk Level", risk['risk_level'].upper())
     
@@ -192,23 +308,23 @@ def show_risk_detail(risk, risks_list):
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("🚀 Escalate", use_container_width=True, type="primary"):
+        if st.button("Escalate", use_container_width=True, type="primary"):
             st.session_state.show_escalation = True
             st.session_state.escalation_risk = risk
             st.rerun()
     
     with col2:
-        if st.button("🗑️ Dismiss", use_container_width=True):
+        if st.button("Dismiss", use_container_width=True):
             risk['action'] = 'dismiss'
             risk['status'] = 'dismissed'
-            risk['reviewed_at'] = datetime.utcnow().isoformat()
+            risk['reviewed_at'] = datetime.now(timezone.utc).isoformat()
             save_risk_action(risk)
-            st.success("✅ Risk dismissed")
+            st.success("Risk dismissed")
             st.session_state.selected_risk = None
             st.rerun()
     
     with col3:
-        if st.button("💬 Other (Chat)", use_container_width=True):
+        if st.button("Other (Chat)", use_container_width=True):
             st.session_state.show_chat = True
             st.rerun()
     
@@ -227,7 +343,7 @@ def show_risk_detail(risk, risks_list):
 def show_escalation_modal(risk):
     """Show escalation options in a modal-style container."""
     st.markdown("---")
-    st.subheader("🚀 Escalation Options")
+    st.subheader("Escalation Options")
     
     # Generate options
     if 'escalation_options' not in st.session_state:
@@ -240,6 +356,11 @@ def show_escalation_modal(risk):
             st.session_state.escalation_options = options
     else:
         options = st.session_state.escalation_options
+    
+    # Ensure options is not None
+    if options is None:
+        options = ["Monitor virality", "Prepare statement", "Contact affected parties"]
+        st.session_state.escalation_options = options
     
     st.write("**Select an action to mitigate this risk:**")
     
@@ -261,18 +382,18 @@ def show_escalation_modal(risk):
 def show_action_summary(risk, chosen_action):
     """Show summary after action selection."""
     st.markdown("---")
-    st.success("### ✅ Escalation Summary")
+    st.success("### Escalation Summary")
     
     st.write(f"**Risk Name:** {risk['risk_type'].replace('_', ' ').title()}")
     st.write(f"**Action Taken:** {chosen_action}")
     st.write(f"**Updated Status:** Mitigated")
-    st.write(f"**Timestamp:** {datetime.utcnow().isoformat()}")
+    st.write(f"**Timestamp:** {datetime.now(timezone.utc).isoformat()}")
     
     if st.button("Confirm & Save", type="primary", key="confirm_save"):
         risk['action'] = 'escalate'
         risk['status'] = 'mitigated'  # Changed from 'actioned' to 'mitigated'
         risk['action_taken'] = chosen_action
-        risk['reviewed_at'] = datetime.utcnow().isoformat()
+        risk['reviewed_at'] = datetime.now(timezone.utc).isoformat()
         save_risk_action(risk)
         
         st.balloons()
@@ -286,9 +407,9 @@ def show_action_summary(risk, chosen_action):
         st.rerun()
 
 def save_risk_action(risk):
-    """Save human decision to risks.json."""
+    """Save human decision to risks.json and history.json."""
     try:
-        # Read fresh data (don't use cache)
+        # Read fresh data (no caching)
         with open("../output/risks.json", "r", encoding="utf-8") as f:
             risks = json.load(f)
         
@@ -302,11 +423,12 @@ def save_risk_action(risk):
         with open("../output/risks.json", "w", encoding="utf-8") as f:
             json.dump(risks, f, indent=2)
         
-        # Clear cache so next load gets fresh data
-        load_risks.clear()
-        st.success("✅ Risk saved successfully!")
+        # Save to history
+        save_to_history(risk)
+        
+        st.success("Risk saved successfully!")
     except Exception as e:
-        st.error(f"❌ Error saving risk: {e}")
+        st.error(f"Error saving risk: {e}")
 
 def show_department_view(department, risks_list):
     """Department-level aggregated view."""
@@ -316,67 +438,276 @@ def show_department_view(department, risks_list):
     st.write(f"**{len(dept_risks)} signals** detected")
     
     # Filters
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     with col1:
         min_confidence = st.slider("Min Confidence", 0.0, 1.0, 0.0, key=f"conf_{department}")
     with col2:
-        selected_severity = st.multiselect("Risk Level", ["low", "medium", "high", "critical"], 
-                                          default=["low", "medium", "high", "critical"],
+        selected_severity = st.multiselect("Risk Level", ["low", "medium", "high"], 
+                                          default=["low", "medium", "high"],
                                           key=f"sev_{department}")
-    with col3:
-        days_back = st.number_input("Days", 1, 365, 7, key=f"days_{department}")
     
     # Filter risks
-    cutoff_date = (datetime.utcnow() - timedelta(days=days_back)).isoformat()
     filtered = [r for r in dept_risks 
                 if r['confidence'] >= min_confidence 
-                and r['risk_level'] in selected_severity
-                and r['time-detected'] >= cutoff_date]
+                and r['risk_level'] in selected_severity]
     
     # Visualizations
     col1, col2 = st.columns(2)
     
     with col1:
-        st.write("**Signal Distribution by Type**")
+        st.write("**Risk Distribution by Level**")
         if filtered:
-            type_counts = pd.Series([r['risk_type'] for r in filtered]).value_counts()
-            st.bar_chart(type_counts)
+            # Count risks by level
+            level_counts = pd.Series([r['risk_level'] for r in filtered]).value_counts()
+            
+            # Define colors for risk levels
+            level_colors = {
+                'critical': '#dc3545',
+                'high': '#fd7e14',
+                'medium': '#ffc107',
+                'low': '#28a745'
+            }
+            color_list = [level_colors.get(level, '#6c757d') for level in level_counts.index]
+            
+            fig = px.pie(
+                values=level_counts.values,
+                names=level_counts.index,
+                title=f"Risk Levels in {department}",
+                color_discrete_sequence=color_list
+            )
+            fig.update_layout(
+                height=400,
+                showlegend=True,
+                font=dict(size=12)
+            )
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No data to display")
     
     with col2:
-        st.write("**Confidence Score Distribution**")
+        st.write("**Risk Distribution by Type**")
         if filtered:
-            conf_data = pd.Series([r['confidence'] for r in filtered])
-            st.bar_chart(conf_data.value_counts().sort_index())
+            # Count risks by type
+            type_counts = pd.Series([r['risk_type'] for r in filtered]).value_counts()
+            # Format the type names for display
+            formatted_names = [name.replace('_', ' ').title() for name in type_counts.index]
+            
+            fig = px.pie(
+                values=type_counts.values,
+                names=formatted_names,
+                title=f"Risk Types in {department}"
+            )
+            fig.update_layout(
+                height=400,
+                showlegend=True,
+                font=dict(size=12)
+            )
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No data to display")
     
     # Risk Cards
     st.subheader("Risk Cards")
     for risk in filtered:
-        with st.expander(f"🔴 {risk['risk_type'].upper()} | Level: {risk['risk_level']} | Conf: {risk['confidence']:.0%}"):
+        # Verification status icon
+        verified_icon = "✅" if risk.get('is_verified') else "⚠️"
+        cred_score = risk.get('credibility_score', 0.5)
+        risk_level = risk['risk_level']
+        
+        # Color-coded container based on risk level
+        card_header = f"{verified_icon} {risk['risk_type'].upper()} | Level: {risk_level.upper()} | Conf: {risk['confidence']:.0%} | Cred: {cred_score:.0%}"
+        
+        with st.expander(card_header):
             col1, col2 = st.columns(2)
             with col1:
                 st.write(f"**Summary:** {risk['summary']}")
                 st.write(f"**Detected:** {risk['time-detected']}")
+                st.write(f"**Verification:** {verified_icon} {'Verified' if risk.get('is_verified') else 'Unverified'}")
             with col2:
                 st.write(f"**Status:** {risk.get('status', 'pending')}")
                 st.write(f"**Why It Matters:** {risk['why_it_matters']}")
+                if risk.get('verification_notes'):
+                    st.write(f"**Notes:** {risk['verification_notes']}")
+            
+            # Color-coded display based on risk level
+            container_type = get_risk_container(risk_level)
+            if container_type == 'error':
+                st.error(f"**HIGH SEVERITY RISK** - Requires immediate attention")
+            elif container_type == 'warning':
+                st.warning(f"**MEDIUM SEVERITY RISK** - Requires monitoring")
+            else:
+                st.success(f"✓ **LOW SEVERITY RISK** - Routine monitoring")
             
             if st.button("View Details", key=f"details_{risk['post_id']}"):
                 st.session_state.selected_risk = risk
                 st.rerun()
 
+def initialize_session_state():
+    """Initialize session state for real-time monitoring."""
+    if 'last_risk_count' not in st.session_state:
+        st.session_state.last_risk_count = 0
+    if 'notification_queue' not in st.session_state:
+        st.session_state.notification_queue = []
+    if 'processed_ids' not in st.session_state:
+        st.session_state.processed_ids = set()
+
+def show_notification_popup(risk):
+    """Show a notification popup for new risks."""
+    dept_icon = {
+        "Technology & Operations": "💻",
+        "Customer Support": "📞",
+        "Marketing & Communications": "📢",
+        "Risk & Compliance": "⚖️"
+    }
+    
+    icon = dept_icon.get(risk.get('department'), "🚨")
+    
+    # Create a visual notification card
+    notification_col = st.columns([1, 4, 1])
+    with notification_col[0]:
+        st.markdown(f"# {icon}")
+    
+    with notification_col[1]:
+        severity_color = {
+            'critical': '🔴',
+            'high': '🟠',
+            'medium': '🟡',
+            'low': '🟢'
+        }
+        
+        severity = severity_color.get(risk.get('risk_level', 'low'), '⚪')
+        
+        st.markdown(f"""
+        ### {severity} New Risk Signal Detected
+        **Department:** {risk.get('department', 'N/A')}  
+        **Type:** {risk.get('risk_type', 'unknown').replace('_', ' ').title()}  
+        **Level:** {risk.get('risk_level', 'unknown').upper()}  
+        **Confidence:** {risk.get('confidence', 0):.0%}  
+        **Caption:** *{risk.get('caption', '')[:80]}...*
+        """)
+    
+    with notification_col[2]:
+        if st.button("View", key=f"notify_{risk['post_id']}"):
+            st.session_state.selected_risk = risk
+            st.rerun()
+
+def check_for_new_risks():
+    """Check if new risks have arrived and show notifications."""
+    risks = load_risks()
+    current_count = len(risks)
+    
+    # Get newly added risks
+    if current_count > st.session_state.last_risk_count:
+        new_risks = risks[st.session_state.last_risk_count:]
+        st.session_state.last_risk_count = current_count
+        
+        return new_risks
+    
+    return []
+
+def show_history_view(history_list):
+    """Display risk history with details and filters."""
+    if not history_list:
+        st.info("No history yet. Risks will appear here after you take action on them.")
+        return
+    
+    st.subheader(f"History Log ({len(history_list)} items)")
+    
+    # Filters
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        status_filter = st.multiselect("Status", ["dismissed", "mitigated"], 
+                                       default=["dismissed", "mitigated"],
+                                       key="hist_status")
+    
+    with col2:
+        type_filter = st.multiselect("Risk Type", 
+                                     ["fraud_signal", "service_signal", "rumor", "misinformation", "other"],
+                                     default=["fraud_signal", "service_signal", "rumor", "misinformation", "other"],
+                                     key="hist_type")
+    
+    with col3:
+        dept_filter = st.multiselect("Department",
+                                     list(set(h.get('department', 'Unknown') for h in history_list)),
+                                     default=list(set(h.get('department', 'Unknown') for h in history_list)),
+                                     key="hist_dept")
+    
+    # Filter history
+    filtered_history = [h for h in history_list 
+                       if h.get('status') in status_filter
+                       and h.get('risk_type') in type_filter
+                       and h.get('department') in dept_filter]
+    
+    if not filtered_history:
+        st.info("No history items match the selected filters.")
+        return
+    
+    # Display as table
+    history_data = []
+    for h in sorted(filtered_history, key=lambda x: x.get('reviewed_at', x.get('time_detected', '')), reverse=True):
+        history_data.append({
+            "Post ID": h.get('post_id', 'N/A'),
+            "Caption": h.get('caption', '')[:50] + "...",
+            "Status": h.get('status', 'N/A').upper(),
+            "Type": h.get('risk_type', 'N/A').replace('_', ' ').title(),
+            "Level": h.get('risk_level', 'N/A').upper(),
+            "Department": h.get('department', 'N/A'),
+            "Action Taken": h.get('action', 'N/A').title(),
+            "Reviewed At": h.get('reviewed_at', 'N/A')[:10]
+        })
+    
+    df = pd.DataFrame(history_data)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+    
+    # Option to clear history
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("🗑️ Clear History", key="clear_history"):
+            try:
+                with open("../output/history.json", "w", encoding="utf-8") as f:
+                    json.dump([], f)
+                st.success("History cleared!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error clearing history: {e}")
+
 def main():
-    st.title("🏦 Mashreq Social Signal Intelligence Dashboard")
-    st.write("Governance-Focused Risk Review | No Automated Actions")
+    # Initialize session state
+    initialize_session_state()
+    
+    st.title("Mashreq Social Signal Intelligence Dashboard")
+    st.write("Real-Time Risk Monitoring | User-Driven Decision Making")
+    
+    # Auto-refresh every 2 seconds
+    st.markdown("""
+    <script>
+    setTimeout(function() {
+        window.location.reload();
+    }, 2000);
+    </script>
+    """, unsafe_allow_html=True)
     
     risks = load_risks()
     
     if not risks:
-        st.warning("No risks loaded. Run agent.py first.")
+        st.info("Waiting for risk signals... The dashboard will auto-refresh as risks arrive.")
         return
+    
+    # Check for new risks and show notifications
+    new_risks = check_for_new_risks()
+    
+    if new_risks:
+        st.markdown("---")
+        st.subheader("New Risk Alerts")
+        
+        for risk in new_risks:
+            if risk['post_id'] not in st.session_state.processed_ids:
+                with st.container(border=True):
+                    show_notification_popup(risk)
+                    st.session_state.processed_ids.add(risk['post_id'])
+        
+        st.markdown("---")
     
     # Check for selected risk in session
     if 'selected_risk' in st.session_state and st.session_state.selected_risk:
@@ -394,26 +725,36 @@ def main():
     }
     
     # Overview metrics
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.metric("Total Signals", len(risks))
     with col2:
         high_risk = len([r for r in risks if r['risk_level'] in ['high', 'critical']])
-        st.metric("High/Critical", high_risk)
+        st.metric("Critical/High", high_risk)
     with col3:
+        medium_risk = len([r for r in risks if r['risk_level'] == 'medium'])
+        st.metric("Medium", medium_risk)
+    with col4:
         avg_conf = sum(r['confidence'] for r in risks) / len(risks) if risks else 0
         st.metric("Avg Confidence", f"{avg_conf:.0%}")
-    with col4:
-        monitored = len([r for r in risks if r.get('status') in ['monitoring', 'validation_requested']])
-        st.metric("Under Review", monitored)
+    with col5:
+        actioned = len([r for r in risks if r.get('status') in ['mitigated', 'actioned']])
+        st.metric("Actioned", actioned)
     
     st.divider()
     
-    # Department Tabs
-    tabs = st.tabs(list(departments))
-    for tab, dept in zip(tabs, departments):
+    # Department Tabs + History Tab
+    tab_names = list(departments) + ["📋 History"]
+    tabs = st.tabs(tab_names)
+    
+    for tab, dept in zip(tabs[:-1], departments):
         with tab:
             show_department_view(dept, risks)
+    
+    # History Tab
+    with tabs[-1]:
+        history = load_history()
+        show_history_view(history)
 
 if __name__ == "__main__":
     main()
