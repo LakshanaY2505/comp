@@ -663,7 +663,7 @@ def show_history_view(history_list):
     # Option to clear history
     col1, col2 = st.columns([3, 1])
     with col2:
-        if st.button("🗑️ Clear History", key="clear_history"):
+        if st.button("Clear History", key="clear_history"):
             try:
                 with open("../output/history.json", "w", encoding="utf-8") as f:
                     json.dump([], f)
@@ -699,9 +699,12 @@ def main():
     
     if new_risks:
         st.markdown("---")
-        st.subheader("New Risk Alerts")
+        st.subheader("Urgent Risk Alerts")
         
-        for risk in new_risks:
+        # Filter for high and critical risks only
+        high_risks = [r for r in new_risks if r['risk_level'] in ['high', 'critical']]
+        
+        for risk in high_risks:
             if risk['post_id'] not in st.session_state.processed_ids:
                 with st.container(border=True):
                     show_notification_popup(risk)
@@ -744,7 +747,7 @@ def main():
     st.divider()
     
     # Department Tabs + History Tab
-    tab_names = list(departments) + ["📋 History"]
+    tab_names = list(departments) + ["History"]
     tabs = st.tabs(tab_names)
     
     for tab, dept in zip(tabs[:-1], departments):
