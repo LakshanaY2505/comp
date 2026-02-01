@@ -22,6 +22,22 @@ Set your OpenAI API key:
 $env:OPENAI_API_KEY="your-api-key-here"
 ```
 
+## Data Structure
+
+### Synthetic Data Format
+Each post in `synthetic_data.json` includes:
+```json
+{
+  "id": "1",
+  "username": "Ahmed Hassan",
+  "caption": "Mashreq is down"
+}
+```
+
+The data includes 22 social media posts with realistic usernames and various risk-related content.
+
+**Note:** The system receives all fields including `username` and `id`, but **only analyzes the `caption`** for risk detection. This ensures the risk analysis is **anonymous** and focused solely on the content of the post, not on who posted it.
+
 ### Running the Demo
 
 **Terminal 1 - Start the Dashboard:**
@@ -53,29 +69,31 @@ python stream_risks.py 5 false
 ## What to Expect
 
 1. **Dashboard opens** - Initially shows "Waiting for risk signals..."
-2. **Risks start arriving** - Each risk appears as a notification popup on the dashboard
+2. **High/Critical Risks Alert** - Only HIGH and CRITICAL severity risks appear as notification popups
 3. **Color-coded by severity**:
-   - 🔴 **Critical/High** (Red border)
-   - 🟡 **Medium** (Yellow border)
-   - 🟢 **Low** (Green border)
+   - 🔴 **Critical/High** (Red border) - Shows in alerts
+   - 🟡 **Medium** (Yellow border) - Shows in department tabs only
+   - 🟢 **Low** (Green border) - Shows in department tabs only
 
 4. **Department Routing** - Each risk is automatically routed to its department:
-   - 💻 Technology & Operations
-   - 📞 Customer Support
-   - 📢 Marketing & Communications
-   - ⚖️ Risk & Compliance
+   - Technology & Operations
+   - Customer Support
+   - Marketing & Communications
+   - Risk & Compliance
 
 5. **User Decision Making** - For each risk you can:
-   - **View Details** - See full analysis and credibility scores
+   - **View Full Details** - See complete analysis and credibility scores (click anywhere on the alert)
    - **Escalate** - Get AI-generated mitigation options
    - **Dismiss** - Mark as reviewed but not actionable
    - **Save Decision** - Record your action for audit trail
 
 ## Dashboard Features
 
-### Real-Time Updates
+### Real-Time Notifications
 - Auto-refreshes every 2 seconds
-- Shows newly arrived risks with notification popups
+- Shows HIGH and CRITICAL severity risks with notification alerts
+- Medium and Low risks visible in department tabs
+- Notification alerts display without action buttons
 - Tracks notification history
 
 ### Department Views
@@ -83,10 +101,10 @@ python stream_risks.py 5 false
 - **Department Tabs** - Filtered view for each department
 - **Metrics**:
   - Total Signals
-  - 🔴 Critical/High Risks
-  - 🟡 Medium Risks
+  - Critical/High Risks
+  - Medium Risks
   - Average Confidence Score
-  - ✅ Actioned Risks
+  - Actioned Risks
 
 ### Risk Detail View
 Shows:
@@ -119,16 +137,16 @@ Decisions Saved to risks.json (Audit trail)
 ## Example Workflow
 
 1. Dashboard is running and waiting
-2. First risk arrives: "Mashreq is down" → Service signal
-3. Notification popup shows: 🟡 Medium severity
-4. User clicks "View" in notification
-5. Detail page shows: "Possible service disruption"
+2. First HIGH/CRITICAL risk arrives: "Sophisticated credit card skimming operation" → Fraud Signal
+3. Notification alert shows automatically: High severity 🔴
+4. Medium and Low severity risks appear silently in department tabs
+5. User can view full details by clicking on the risk
 6. User chooses to "Escalate"
 7. App generates 3 mitigation options
-8. User selects action: "Monitor virality and track sources"
+8. User selects action: "Initiate fraud investigation"
 9. Decision recorded with timestamp
 10. Dashboard returns to signal list
-11. Next risk arrives automatically...
+11. Next HIGH/CRITICAL risk arrives automatically...
 
 ## Customization
 
